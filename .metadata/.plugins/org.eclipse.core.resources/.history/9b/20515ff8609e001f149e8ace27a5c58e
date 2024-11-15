@@ -1,0 +1,760 @@
+// Commands for sending messages to a TMC2208 via its single wire UART
+//
+// Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
+//
+// This file may be distributed under the terms of the GNU GPLv3 license.
+#include "main.h"
+#include "gpio.h"
+#include "tmcuart.h"
+#include "timer.h"
+#include <string.h> // memcpy
+
+#define USE_STEPPER_TIM 1
+//#define TU_USE_300MV 1
+//#define TU_USE_500MV 1
+//#define TU_USE_400_300MV 1
+//#define TU_USE_500_300MV 1
+#define TU_USE_600_300MV 1
+//#define TU_USE_700_350MV 1
+//#define TU_USE_750_350MV 1
+//#define TU_USE_800_400MV 1
+//#define TU_USE_900_200MV 1
+//#define TU_USE_900_450MV 1
+//#define TU_USE_1000_200MV 1
+//#define TU_USE_1000_500MV 1
+//#define TU_USE_1000_1000MA	1
+//#define TU_USE_1200_1200MA	1
+
+struct tmcuart_s {
+	struct timer timer;
+	struct gpio_type tx_pin;
+	struct gpio_type rx_pin;
+	uint32_t cfg_bit_time, bit_time, decode_data;
+	int read_offset;
+	uint8_t flags, untreated, state;
+	uint8_t pos, read_count, write_count;
+	uint8_t data[10];
+};
+
+static enum TU_STATUS{
+	TU_LINE_HIGH = 1<<0, 
+	TU_ACTIVE = 1<<1, 
+	TU_READ_SYNC = 1<<2,
+	TU_REPORT = 1<<3, 
+	TU_PULLUP = 1<<4, 
+	TU_SINGLE_WIRE = 1<<5,
+//	TU_TIME_RESET = 1<< 6,
+};
+
+static enum TMCUART_STATE_NAME
+{
+	TMCUART_STATE_START= 0,
+	TMCUART_STATE_QUERY, // 0x02
+	TMCUART_STATE_GCONF, // 0x00
+	TMCUART_STATE_CHOPCONF, // 0x6c
+	TMCUART_STATE_IHOLD_IRUN, // 0x10  调节电机运行电流 和静态电流
+	TMCUART_STATE_TPWMTHRS, // 0x13 // 设置静音模式或高速防抖模式
+	TMCUART_STATE_PWMCONF, // 0x70  斩波的频率选取
+	TMCUART_STATE_TPOWERDOWN, // 0x11   运行电流保持时间的多少
+	TMCUART_STATE_FINISH,
+	TMCUART_STATE_WAIT,
+	TMCUART_STATE_WAIT_READ,
+	TMCUART_STATE_WAIT_READ_QUERY,
+	TMCUART_STATE_GET_DEV_STATUS,
+	TMCUART_STATE_WAIT_READ_STATUS,
+	TMCUART_STATE_GET_GSTAT,
+	TMCUART_STATE_WAIT_READ_GSTAT,
+	TMCUART_STATE_GET_TMCSTATE,
+};
+
+//static struct task_wake tmcuart_wake;
+static struct tmcuart_s tus;
+
+uint_fast8_t wake_tmcuart(struct TIMER_STEPPER_STATUS *ts)
+{
+	struct tmcuart_s *t = &tus;
+	if(t->timer.func)
+		t->timer.func(&t->timer);
+}
+inline static void tmcuart_set_waketime(uint16_t next)
+{
+#if defined(USE_STEPPER_TIM)
+	if(stepper_t.lock) return;
+	stepper_t.func = wake_tmcuart;
+	STEPPER_START_TIM(next);
+#else
+	tus.timer.waketime = (OSTime_GetT() + next);
+	tus.timer.next_time_ms = OSTime_GetL() + (tus.timer.waketime / TICK_RATE);
+	if(tus.timer.waketime >= TICK_RATE)
+	{
+//		tus.flags |= TU_TIME_RESET;
+		tus.timer.waketime %= TICK_RATE;
+	}
+#endif
+}
+
+uint32_t tmcuart_get_decode_data(void)
+{
+	return tus.decode_data;
+}
+
+uint32_t _decode_read(uint8_t *data)
+{
+	uint8_t d;
+	uint32_t val = 0;
+	uint16_t pos = 0, i = 0;
+	uint32_t mval = 0, mval1=0, mval2=0;
+
+	for(i=3; i<10 && pos<64; i++)
+	{
+		d = data[i];
+		mval |= d << (pos%32);
+		pos += 8;
+
+		if(pos == 32)
+		{
+			mval1 = mval;
+			mval = 0;
+		}
+	}
+	mval2 = mval;
+	if(mval1 == 0 && mval2 == 0)
+	{
+		return 0xffffffff;
+	}
+	// Extract register value
+	val = ((((mval1 >> 7) & 0xff) << 24) | (((mval1 >> 17) & 0xff) << 16)
+			 | ((((mval2 & 0x07) << 5) | ((mval1 >> 27) & 0x1f) & 0xff) << 8)
+			 | ((mval2 >> 5) & 0xff));
+
+	return val;
+}
+
+// Restore uart line to normal "idle" mode
+static void tmcuart_reset_line(struct tmcuart_s *t)
+{
+	if (t->flags & TU_SINGLE_WIRE)
+	{
+		gpio_out_reset(t->tx_pin, 1);
+	}
+	else
+	{
+		gpio_out_write(t->tx_pin, 1);
+	}
+	t->flags = (t->flags & (TU_PULLUP | TU_SINGLE_WIRE)) | TU_LINE_HIGH;
+}
+
+// Helper function to end a transmission and schedule a response
+static uint_fast8_t tmcuart_finalize(struct tmcuart_s *t)
+{
+	tmcuart_reset_line(t);
+	t->flags |= TU_REPORT;
+	t->untreated = 0;
+	led_set_state(LED_NO_FIL);
+	return SF_DONE;
+}
+
+// Event handler for reading uart bits
+static uint_fast8_t tmcuart_read_event(struct timer *timer)
+{
+	struct tmcuart_s *t = &tus;
+	uint8_t v = gpio_in_read(t->rx_pin);
+
+	// Read and store bit
+	uint8_t pos = t->pos, mask = v << (pos & 0x07), data = t->data[pos >> 3];
+	data |= mask;
+	t->data[pos >> 3] = data;
+	pos++;
+	if (pos >= t->read_count)
+	{
+		t->pos = pos;
+		return tmcuart_finalize(t);
+	}
+	t->pos = pos;
+#endif
+	tmcuart_set_waketime(t->bit_time);
+	return SF_RESCHEDULE;
+}
+
+// Event handler for detecting start of data reception
+static uint_fast8_t tmcuart_read_sync_event(struct timer *timer)
+{
+	struct tmcuart_s *t = &tus;
+	uint8_t v = gpio_in_read(t->rx_pin);
+	if (t->pos++ >= 64)
+	{
+		// Timeout
+		t->read_count = 0;
+		return tmcuart_finalize(t);
+	}
+	if (v)
+	{
+		t->flags |= TU_READ_SYNC;
+	}
+	else if (t->flags & TU_READ_SYNC)
+	{
+		// Now synchronized - begin reading
+		t->pos = 0;
+		t->timer.func = tmcuart_read_event;
+		memset(t->data, 0, 10);
+//		return tmcuart_read_event(timer);
+//		tmcuart_set_waketime(((t->bit_time >> 1)));
+//		return SF_RESCHEDULE;
+	}
+	tmcuart_set_waketime((t->bit_time>>1));
+	return SF_RESCHEDULE;
+}
+
+// Event handler called at end of uart writing
+static uint_fast8_t tmcuart_send_finish_event(struct timer *timer)
+{
+	struct tmcuart_s *t = &tus;
+	if (!t->read_count)
+	{
+		// This is a tx only operation - success
+		return tmcuart_finalize(t);
+	}
+	// Prepare for message rx
+	if (t->flags & TU_SINGLE_WIRE)
+	{
+		gpio_in_reset(t->rx_pin, t->flags & TU_PULLUP);
+	}
+	t->pos = 0;
+	t->timer.func = tmcuart_read_sync_event;
+	tmcuart_set_waketime(t->bit_time * 4);
+	return SF_RESCHEDULE;
+}
+
+// Event handler for sending uart bits
+static uint_fast8_t tmcuart_send_event(struct timer *timer)
+{
+	struct tmcuart_s *t = &tus;
+
+#if 0
+	// Toggle uart output
+	gpio_out_toggle_noirq(t->tx_pin);
+	t->flags ^= TU_LINE_HIGH;
+	// Determine next toggle time
+	uint8_t line_state = t->flags & TU_LINE_HIGH;
+	uint32_t bit_time = t->bit_time, next = bit_time;
+	uint8_t pos = t->pos;
+	for (;;) {
+		pos++;
+		if (pos >= t->write_count) {
+			// No more toggles necessary - schedule finish event
+			t->timer.func = tmcuart_send_finish_event;
+			tmcuart_set_waketime(next);
+			return SF_RESCHEDULE;
+		}
+		uint8_t data = t->data[pos >> 3], bit = (data >> (pos & 0x07)) & 0x01;
+		if (bit != line_state)
+		{
+			break;
+		}
+		next += bit_time;
+	}
+	t->pos = pos;
+	tmcuart_set_waketime(next);
+#elif 1
+	uint8_t data = t->data[t->pos >> 3], bit = (data >> (t->pos & 0x07)) & 0x01;
+	if(bit)
+	{
+//		t->flags |= TU_LINE_HIGH;
+		t->tx_pin.regs->BSRR = t->tx_pin.bit;
+	}
+	else
+	{
+//		t->flags &= ~TU_LINE_HIGH;
+		t->tx_pin.regs->BRR = t->tx_pin.bit;
+	}
+	t->pos++;
+	if (t->pos >= t->write_count) {
+		// No more toggles necessary - schedule finish event
+		t->timer.func = tmcuart_send_finish_event;
+//		tmcuart_set_waketime(next);
+//		return SF_RESCHEDULE;
+	}
+	tmcuart_set_waketime(t->bit_time);
+#endif
+	return SF_RESCHEDULE;
+}
+
+// Event handler for sending sync nibble with enhanced baud detection
+static uint_fast8_t tmcuart_send_sync_event(struct timer *timer)
+{
+	struct tmcuart_s *t = &tus;
+	// Toggle uart output and note toggle time
+	gpio_out_toggle_noirq(t->tx_pin);
+	uint32_t cur = OSTime_GetT();
+	t->flags ^= TU_LINE_HIGH;
+	// Determine next wakeup time
+	t->pos++;
+	if (t->pos == 1) {
+		// First bit just sent - record scheduling offset for later use
+		uint32_t offset = cur - t->timer.waketime;
+		t->bit_time = offset;
+	} else if (t->pos >= 5) {
+		// Last bit of sync nibble just sent - calculate actual baud rate used
+		uint32_t offset = cur - t->timer.waketime, start_offset = t->bit_time;
+		int32_t diff = 0;//offset - start_offset;
+		t->bit_time = t->cfg_bit_time/* + DIV_ROUND_CLOSEST(diff, 4)*/;
+		t->timer.func = tmcuart_send_event;
+		tmcuart_set_waketime(diff + t->bit_time);
+		return SF_RESCHEDULE;
+	}
+	tmcuart_set_waketime(t->cfg_bit_time);
+	return SF_RESCHEDULE;
+}
+
+void tmcuart_init(uint32_t rx_pin, uint32_t tx_pin,
+														uint8_t pull_up, uint32_t bit_tick)
+{
+	struct tmcuart_s *t = &tus;
+	t->rx_pin = gpio_in_setup(rx_pin, !!pull_up);
+	t->tx_pin = gpio_out_setup(tx_pin, 1);
+	t->cfg_bit_time = bit_tick;
+	t->flags = (TU_LINE_HIGH | (pull_up ? TU_PULLUP : 0)
+							| (rx_pin == tx_pin ? TU_SINGLE_WIRE : 0));
+	t->state = TMCUART_STATE_START;
+	t->read_offset = -1;
+}
+
+// Parse and schedule a TMC UART transmission request
+void command_tmcuart_send(uint8_t wlen, uint8_t *args, uint8_t rlen)
+{
+	struct tmcuart_s *t = &tus;
+	if (t->flags & TU_ACTIVE)
+		// Uart is busy - silently drop this request (host should retransmit)
+		return;
+	uint8_t write_len = wlen;
+	uint8_t *write = args;
+	uint8_t read_len = rlen;
+	if (write_len > sizeof(t->data) || read_len > sizeof(t->data))
+		return;
+	memcpy(t->data, write, write_len);
+	t->pos = 0;
+	t->flags = (t->flags & (TU_LINE_HIGH|TU_PULLUP|TU_SINGLE_WIRE)) | TU_ACTIVE;
+	t->write_count = write_len * 8;
+	t->read_count = read_len * 8;
+	if (write_len >= 1 && (t->data[0] & 0x3f) == 0x2a && 0) {
+		t->timer.func = tmcuart_send_sync_event;
+	} else {
+		t->bit_time = t->cfg_bit_time;
+		t->timer.func = tmcuart_send_event;
+	}
+//	__disable_irq();
+//	t->timer.waketime = OSTime_GetNextTick(timer_from_us(200));
+	tmcuart_set_waketime(timer_from_us(200));
+	t->untreated = 1;
+//	GPIOA->BSRR = GPIO_PIN_4;
+//	led_set_state(LED_ERROR);
+//	__enable_irq();
+}
+
+// Report completed response message back to host
+void tmcuart_task(void)
+{
+	static uint8_t next_state = 0, last_state = 0;
+	struct tmcuart_s *t = &tus;
+	uint32_t now_time = OSTime_GetL(), now_tick = OSTime_GetT();
+	uint8_t uart_send_str[64], wait_read_query_flag = 0;
+
+	if(now_time < t->timer.next_time_ms)
+	{
+		return;
+	}
+#if !defined(USE_STEPPER_TIM)
+	else if((now_time == t->timer.next_time_ms) &&
+					(now_tick < t->timer.waketime))
+	{
+		return;
+	}
+#endif
+
+	switch(t->state)
+	{
+		case TMCUART_STATE_START:
+		{
+			t->timer.next_time_ms = OSTime_GetL() + 2000;
+			if(t->read_offset < 0)
+			{
+				last_state = t->state;
+				t->state = TMCUART_STATE_QUERY;
+				next_state = TMCUART_STATE_GCONF;
+			}
+			else
+			{
+				t->state = TMCUART_STATE_GCONF;
+			}
+		}break;
+
+		case TMCUART_STATE_QUERY: // 0x02
+		{
+//			uint8_t send_str[] = {234, 3, 72, 32, 228};
+			uint8_t send_str[] = {0xea, 0x03, 0x48, 0x20, 0xe4};
+			command_tmcuart_send(sizeof(send_str), send_str, 10);
+//			next_state = TMCUART_STATE_GCONF;
+			t->state = TMCUART_STATE_WAIT_READ_QUERY;
+//			t->timer.next_time_ms = OSTime_GetL() + 100;
+		}break;
+
+		case TMCUART_STATE_GCONF: // reg=0x00, val=0x1c0
+		{
+//			uint8_t send_str[] = {234, 3, 8, 48, 128, 0, 10, 8, 184, 135};
+//			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x30, 0x80, 0x00, 0x0a, 0x08, 0xb8, 0x87};
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x30, 0x80, 0x00, 0x0a, 0x88, 0xb8, 0xf7};
+			command_tmcuart_send(sizeof(send_str), send_str, 0);
+			last_state = t->state;
+			next_state = TMCUART_STATE_CHOPCONF;
+			t->state = TMCUART_STATE_WAIT;
+//			t->timer.next_time_ms = OSTime_GetL() + 100;
+		}break;
+
+		case TMCUART_STATE_CHOPCONF: // reg=0x6c, val=0x34030053
+		{
+//			uint8_t send_str[] = {234, 3, 136, 61, 154, 6, 2, 104, 42, 191};
+//			uint8_t send_str[] = {0xea, 0x03, 0x88, 0x3d, 0x9a, 0x06, 0x02, 0x68, 0x2a, 0xbf};
+//			uint8_t send_str[] = {0xea, 0x03, 0x88, 0x3d, 0x9c, 0x02, 0x02, 0x68, 0xaa, 0xa8};
+			uint8_t send_str[] = {0xea, 0x03, 0x88, 0x3d, 0x9c, 0x06, 0x02, 0x68, 0xaa, 0xeb};
+			command_tmcuart_send(sizeof(send_str), send_str, 0);
+			last_state = t->state;
+			next_state = TMCUART_STATE_IHOLD_IRUN;
+			t->state = TMCUART_STATE_WAIT;
+//			t->timer.next_time_ms = OSTime_GetL() + 100;
+		}break;
+
+		case TMCUART_STATE_IHOLD_IRUN: // reg=0x10, val=0x80808
+		{
+//			uint8_t send_str[] = {234, 3, 8, 50, 128, 16, 114, 200, 33, 255};
+#if defined(TU_USE_300MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0x42, 0x08, 0x21, 0x96};
+#elif defined(TU_USE_500MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0x72, 0xc8, 0x21, 0xff};
+#elif defined(TU_USE_400_300MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0x5a, 0x08, 0xa1, 0xe0};
+#elif defined(TU_USE_500_300MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0x72, 0x08, 0xa1, 0xec};
+#elif defined(TU_USE_600_300MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0x8a, 0x08, 0xa1, 0xb2};
+#elif defined(TU_USE_700_350MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0xa2, 0x48, 0x21, 0xdd};
+#elif defined(TU_USE_750_350MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0xb2, 0x48, 0xa1, 0xf0};
+#elif defined(TU_USE_800_400MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0xba, 0x68, 0x21, 0xef};
+#elif defined(TU_USE_900_200MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0xd2, 0xa8, 0x20, 0xe3};
+#elif defined(TU_USE_900_450MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0xd2, 0xa8, 0x21, 0xdb};
+#elif defined(TU_USE_1000_200MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0xea, 0xa8, 0xa0, 0xc2};
+#elif defined(TU_USE_1000_500MV)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0xea, 0xc8, 0xa1, 0xdd};
+#elif defined(TU_USE_1000_1000MA)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0xea, 0xa8, 0xa3, 0xe6};
+#elif defined(TU_USE_1200_1200MA)
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x32, 0x80, 0x10, 0x9a, 0x68, 0x22, 0x9c};
+#endif //defined(TU_USE_300MV)
+			command_tmcuart_send(sizeof(send_str), send_str, 0);
+			last_state = t->state;
+			next_state = TMCUART_STATE_TPWMTHRS;
+			t->state = TMCUART_STATE_WAIT;
+//			t->timer.next_time_ms = OSTime_GetL() + 100;
+		}break;
+
+		case TMCUART_STATE_TPWMTHRS: // reg=0x13, val=0x2b
+		{
+//			uint8_t send_str[] = {234, 3, 104, 50, 128, 00, 02, 232, 37, 154};
+//			uint8_t send_str[] = {0xea, 0x03, 0x68, 0x32, 0x80, 0x00, 0x02, 0x68, 0x25, 0xea};
+			uint8_t send_str[] = {0xea, 0x03, 0x68, 0x32, 0x80, 0x1e, 0xfa, 0xef, 0x3f, 0xdf};
+			command_tmcuart_send(sizeof(send_str), send_str, 0);
+			last_state = t->state;
+			next_state = TMCUART_STATE_PWMCONF;
+			t->state = TMCUART_STATE_WAIT;
+//			t->timer.next_time_ms = OSTime_GetL() + 100;
+		}break;
+
+		case TMCUART_STATE_PWMCONF: // reg=0x70, val=0xc80d0e24
+		{
+//			uint8_t send_str[] = {234, 3, 8, 62, 228, 26, 114, 136, 164, 133};
+			uint8_t send_str[] = {0xea, 0x03, 0x08, 0x3e, 0xe4, 0x1a, 0x72, 0x88, 0xa4, 0x85};
+			command_tmcuart_send(sizeof(send_str), send_str, 0);
+			last_state = t->state;
+			next_state = TMCUART_STATE_TPOWERDOWN;
+			t->state = TMCUART_STATE_WAIT;
+//			t->timer.next_time_ms = OSTime_GetL() + 100;
+		}break;
+
+		case TMCUART_STATE_TPOWERDOWN: // reg=0x11, val=0x14
+		{
+//			uint8_t send_str[] = {234, 3, 40, 50, 128, 0, 2, 136, 34, 243};
+			uint8_t send_str[] = {0xea, 0x03, 0x28, 0x32, 0x80, 0x00, 0x02, 0x88, 0x22, 0xf3};
+			command_tmcuart_send(sizeof(send_str), send_str, 0);
+			last_state = t->state;
+			next_state = TMCUART_STATE_FINISH;
+			t->state = TMCUART_STATE_WAIT;
+//			t->timer.next_time_ms = OSTime_GetL() + 100;
+		}break;
+
+		case TMCUART_STATE_FINISH:
+		{
+			if(!t->untreated){ return; }
+		}break;
+
+		case TMCUART_STATE_WAIT:
+		{
+			if(!t->untreated)
+			{
+				t->state = TMCUART_STATE_QUERY;
+				t->timer.next_time_ms = OSTime_GetL() + 100;
+			}
+		}break;
+
+		case TMCUART_STATE_WAIT_READ_QUERY:
+		{
+			if(!t->untreated)
+			{
+				if (t->pos >= t->read_count)
+				{
+					t->decode_data = _decode_read(t->data);
+					i2c_slave_set_reg_u32(I2C_TMCU_REPORT, t->decode_data);
+					if(t->decode_data <= 0xff)
+					{
+						// the first query
+						if(t->read_offset < 0)
+						{
+							t->read_offset = t->decode_data;
+						}
+						else if(t->decode_data == ((t->read_offset+1) & 0xff))
+						{
+							t->read_offset = t->decode_data;
+						}
+						wait_read_query_flag = 1;
+					}
+				}
+
+				if(wait_read_query_flag)
+				{
+					t->state = next_state;
+#if defined(HAL_UART_MODULE_ENABLED)
+					HAL_UART_Transmit(&huart1, t->data, 10, 1000);
+					HAL_UART_Transmit(&huart1, "\r\n", 2, 1000);
+					HAL_UART_Transmit(&huart1, (const uint8_t*)&t->decode_data, 4, 1000);
+#endif
+				}
+				else
+				{
+//					t->state = last_state;
+					t->state = TMCUART_STATE_START;
+					t->read_offset = -1;
+#if defined(HAL_UART_MODULE_ENABLED)
+					sprintf(uart_send_str, "-----\r\n", t->decode_data);
+					HAL_UART_Transmit(&huart1, (const uint8_t*)uart_send_str, strlen(uart_send_str), 1000);
+#endif
+				}
+				t->timer.next_time_ms = OSTime_GetL() + 200;
+			}
+		}break;
+		case TMCUART_STATE_GET_TMCSTATE:
+		{
+			
+		}
+			break;
+
+		default:break;
+	}
+
+#if !defined(USE_STEPPER_TIM)
+	if(t->timer.func)
+		t->timer.func(&t->timer);
+#endif // !defined(USE_STEPPER_TIM)
+}
+//DECL_TASK(tmcuart_task);
+
+uint8_t tmcuart_ready(void)
+{
+#if defined(USE_TMCUART)
+	return (tus.state == TMCUART_STATE_FINISH);
+#else
+	return 1;
+#endif
+}
+
+void tmcuart_shutdown(void)
+{
+//	uint8_t i;
+	struct tmcuart_s *t = &tus;
+//	foreach_oid(i, t, command_config_tmcuart)
+	{
+		tmcuart_reset_line(t);
+	}
+}
+
+
+void tmcuart_check_task(void)
+{
+	// If the stepper is not enabled, return it.
+	if(!stepper_get_en())
+	{
+		return;
+	}
+
+	static uint8_t state=TMCUART_STATE_GET_DEV_STATUS;
+	static uint32_t next_time = 0;
+	uint32_t now_time = OSTime_GetL();
+
+	switch(state)
+	{
+		case TMCUART_STATE_GET_DEV_STATUS:
+		{
+			if(now_time == next_time)
+			{
+				// send reg=0x6f
+				uint8_t send_str[5] = {0xea, 0x03, 0xe8, 0xad, 0xe1};
+				command_tmcuart_send(5, send_str, 10);
+				state = TMCUART_STATE_WAIT_READ_STATUS;
+			}
+			next_time = now_time+1000;
+		}break;
+
+		case TMCUART_STATE_WAIT_READ_STATUS:
+		{
+			if(!tus.untreated)
+			{
+				tus.decode_data = _decode_read(tus.data);
+#if defined(HAL_UART_MODULE_ENABLED)
+//					HAL_UART_Transmit(&huart1, tus.data, 10, 1000);
+					HAL_UART_Transmit(&huart1, "6F", 2, 1000);
+					HAL_UART_Transmit(&huart1, (const uint8_t*)&tus.decode_data, 4, 1000);
+#endif
+				state = TMCUART_STATE_GET_GSTAT;
+			}
+		}break;
+
+		case TMCUART_STATE_GET_GSTAT:
+		{
+			if(now_time == next_time)
+			{
+				// send reg=0x01
+				uint8_t send_str[5] = {0xea, 0x03, 0x28, 0x20, 0xc3};
+				command_tmcuart_send(5, send_str, 10);
+				state = TMCUART_STATE_WAIT_READ_GSTAT;
+			}
+			next_time = now_time+1000;
+		}break;
+
+		case TMCUART_STATE_WAIT_READ_GSTAT:
+		{
+			if(!tus.untreated)
+			{
+				tus.decode_data = _decode_read(tus.data);
+#if defined(HAL_UART_MODULE_ENABLED)
+//					HAL_UART_Transmit(&huart1, tus.data, 10, 1000);
+					HAL_UART_Transmit(&huart1, "01", 2, 1000);
+					HAL_UART_Transmit(&huart1, (const uint8_t*)&tus.decode_data, 4, 1000);
+#endif
+				state = TMCUART_STATE_GET_DEV_STATUS;
+			}
+		}break;
+	}
+}
+
+
+#if defined(TMC2208)
+	// tmc_init(stepperX, 500, 16, 200, stealthchop_by_axis[STEALTH_AXIS_XY])
+	// 1: Use Trinamic's ultra quiet stepping mode. 0: use spreadCycle stepping mode.
+	static constexpr bool stealthchop_by_axis[] = { ENABLED(STEALTHCHOP_XY), ENABLED(STEALTHCHOP_Z), ENABLED(STEALTHCHOP_E) };
+  template<char AXIS_LETTER, char DRIVER_ID, AxisEnum AXIS_ID>
+  void tmc_init(TMCMarlin<TMC2208Stepper, AXIS_LETTER, DRIVER_ID, AXIS_ID> &st, const uint16_t mA, const uint16_t microsteps, const uint32_t hyb_thrs, const bool stealth) {
+    TMC2208_n::GCONF_t gconf{0};
+    gconf.pdn_disable = true; // Use UART
+    gconf.mstep_reg_select = true; // Select microsteps with UART
+    gconf.i_scale_analog = false;
+    gconf.en_spreadcycle = !stealth;
+    st.GCONF(gconf.sr);
+    st.stored.stealthChop_enabled = stealth;
+
+    TMC2208_n::CHOPCONF_t chopconf{0};
+    chopconf.tbl = 0b01; // blank_time = 24
+    chopconf.toff = chopper_timing.toff;
+    chopconf.intpol = INTERPOLATE;
+    chopconf.hend = chopper_timing.hend + 3;
+    chopconf.hstrt = chopper_timing.hstrt - 1;
+    TERN_(SQUARE_WAVE_STEPPING, chopconf.dedge = true);
+    TERN_(SHORT_PROTECTION, chopconf.diss2g  = 1);
+    TERN_(SHORT_PROTECTION, chopconf.diss2vs = 1);
+
+    st.CHOPCONF(chopconf.sr);
+
+    // TMC2208_n::CHOPCONF_t chopconf{0};
+    // chopconf.toff = chopper_timing.toff;
+    // chopconf.hstrt = chopper_timing.hstrt - 1;
+    // chopconf.hend = chopper_timing.hend + 3;
+    // chopconf.tbl = 0b01; // blank_time = 24
+    // chopconf.intpol = INTERPOLATE;
+    // TERN_(SQUARE_WAVE_STEPPING, chopconf.dedge = true);
+    // st.CHOPCONF(chopconf.sr);
+
+    st.rms_current(mA, HOLD_MULTIPLIER);
+    st.microsteps(microsteps);
+    st.iholddelay(10);
+    st.TPOWERDOWN(128); // ~2s until driver lowers to hold current
+
+    TMC2208_n::PWMCONF_t pwmconf{0};
+    pwmconf.pwm_lim = 12;
+    pwmconf.pwm_reg = 8;
+    pwmconf.pwm_autograd = true;
+    pwmconf.pwm_autoscale = true;
+    pwmconf.pwm_freq = 0b01;
+    pwmconf.pwm_grad = 14;
+    pwmconf.pwm_ofs = 36;
+    st.PWMCONF(pwmconf.sr);
+
+    TERN(HYBRID_THRESHOLD, st.set_pwm_thrs(hyb_thrs), UNUSED(hyb_thrs));
+
+    st.GSTAT(0b111); // Clear
+    delay(200);
+  }
+#endif // TMC2208
+
+#if defined(TMC2209)
+  template<char AXIS_LETTER, char DRIVER_ID, AxisEnum AXIS_ID>
+  void tmc_init(TMCMarlin<TMC2209Stepper, AXIS_LETTER, DRIVER_ID, AXIS_ID> &st, const uint16_t mA, const uint16_t microsteps, const uint32_t hyb_thrs, const bool stealth) {
+    TMC2208_n::GCONF_t gconf{0};
+    gconf.pdn_disable = true; // Use UART
+    gconf.mstep_reg_select = true; // Select microsteps with UART
+    gconf.i_scale_analog = false;
+    gconf.en_spreadcycle = !stealth;
+    st.GCONF(gconf.sr);
+    st.stored.stealthChop_enabled = stealth;
+
+    TMC2208_n::CHOPCONF_t chopconf{0};
+    chopconf.tbl = 0b01; // blank_time = 24
+    chopconf.toff = chopper_timing.toff;
+    chopconf.intpol = INTERPOLATE;
+    chopconf.hend = chopper_timing.hend + 3;
+    chopconf.hstrt = chopper_timing.hstrt - 1;
+    TERN_(SQUARE_WAVE_STEPPING, chopconf.dedge = true);
+    st.CHOPCONF(chopconf.sr);
+
+    st.rms_current(mA, HOLD_MULTIPLIER);
+    st.microsteps(microsteps);
+    st.iholddelay(10);
+    st.TPOWERDOWN(128); // ~2s until driver lowers to hold current
+
+    TMC2208_n::PWMCONF_t pwmconf{0};
+    pwmconf.pwm_lim = 12;
+    pwmconf.pwm_reg = 8;
+    pwmconf.pwm_autograd = true;
+    pwmconf.pwm_autoscale = true;
+    pwmconf.pwm_freq = 0b01;
+    pwmconf.pwm_grad = 14;
+    pwmconf.pwm_ofs = 36;
+    st.PWMCONF(pwmconf.sr);
+
+    TERN(HYBRID_THRESHOLD, st.set_pwm_thrs(hyb_thrs), UNUSED(hyb_thrs));
+
+    st.GSTAT(0b111); // Clear
+    delay(200);
+  }
+#endif // TMC2209

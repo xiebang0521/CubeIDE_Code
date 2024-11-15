@@ -1,0 +1,10 @@
+14:26:10 **** Build of configuration Debug for project Serial_test ****
+make -j16 all 
+arm-none-eabi-size  Serial_test.elf 
+   text	   data	    bss	    dec	    hex	filename
+   8640	     76	   1644	  10360	   2878	Serial_test.elf
+Finished building: default.size.stdout
+ 
+
+14:26:11 Build Finished. 0 errors, 0 warnings. (took 425ms)
+
