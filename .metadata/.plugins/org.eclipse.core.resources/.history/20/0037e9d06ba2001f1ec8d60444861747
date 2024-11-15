@@ -1,0 +1,16 @@
+#ifndef __RFID_H__
+#define __RFID_H__
+
+#include "main.h"
+#include "usart.h"
+#include  "string.h"
+#include "oled.h"
+uint8_t RFID_Rc523_Config(void);
+
+uint8_t RFID_Rc523_Wirte_Data(uint8_t* Data);
+void RFID_Rc523_Read_Data(uint8_t* Data);
+
+void RFID_Rc523_Write_Block(uint8_t Channel, uint8_t  blockaddr, uint8_t* Data);
+void RFID_Rc523_Read_Block(uint8_t Channel, uint8_t blockaddr, uint8_t* Data);
+
+#endif

@@ -1,0 +1,10 @@
+14:26:12 **** Build of configuration Debug for project stepper_board2 ****
+make -j16 all 
+arm-none-eabi-size  stepper_board2.elf 
+   text	   data	    bss	    dec	    hex	filename
+  32432	    100	   2516	  35048	   88e8	stepper_board2.elf
+Finished building: default.size.stdout
+ 
+
+14:26:12 Build Finished. 0 errors, 0 warnings. (took 475ms)
+

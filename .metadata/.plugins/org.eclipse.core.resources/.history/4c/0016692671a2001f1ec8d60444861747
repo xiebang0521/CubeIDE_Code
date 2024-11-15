@@ -1,0 +1,54 @@
+#ifndef __RFID_H__
+#define __RFID_H__
+
+#include "main.h"
+#include "usart.h"
+#include  "string.h"
+#include "oled.h"
+
+
+//typedef struct
+//{
+//    uint8_t material_type[9];
+//    uint8_t rgb[3];
+//    uint8_t produced_date[4];
+//    uint8_t batch_number[8];
+//    uint8_t hot_bed_temp[4];
+//    uint8_t exthead_temp[4];
+//    uint8_t init_weight[2];
+//    uint8_t empty_tray_weight[2];
+//    uint8_t residual_weight[2];
+//    uint8_t supplier[2];
+//    float material_diameter;
+//    float material_density;
+//}Material_Data;
+
+typedef struct
+{
+    uint8_t material_type[9];
+    uint8_t rgb[3];
+    uint32_t produced_date;
+    uint8_t batch_number[8];
+    uint16_t hot_bed_temp_L;
+    uint16_t hot_bed_temp_H;
+    uint16_t exthead_temp_L;
+    uint16_t exthead_temp_H;
+    uint16_t init_weight;
+    uint16_t empty_tray_weight;
+    uint16_t residual_weight;
+    uint16_t supplier;
+    float material_diameter;
+    float material_density;
+}Material_Data;
+uint8_t RFID_Rc523_Config(void);
+
+uint8_t RFID_Rc523_Wirte_Data(uint8_t* Data);
+void RFID_Rc523_Read_Data(uint8_t* Data);
+
+void RFID_Rc523_Write_Block(uint8_t Channel, uint8_t  blockaddr, uint8_t* Data);
+void RFID_Rc523_Read_Block(uint8_t Channel, uint8_t blockaddr, uint8_t* Data);
+
+void rfid_write_channel_data(uint8_t channel, Material_Data* data);
+void rfid_read_channel_data(uint8_t channel, Material_Data* data);
+
+#endif

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session version="1.0">
+<refactoring comment="Rename resource &apos;RFID_IIC_Test/RFID_IIC_Test.ioc&apos; to &apos;RFID.ioc&apos;" description="Rename resource &apos;RFID_IIC_Test.ioc&apos;" flags="7" id="org.eclipse.ltk.core.refactoring.rename.resource" input="RFID_IIC_Test.ioc" name="RFID.ioc" stamp="1731571208491" updateReferences="true"/>
+</session>
