@@ -69,7 +69,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+	// 修改密码
   Material_Data write_data;
   Material_Data read_data;
 
@@ -144,6 +144,7 @@ int main(void)
 //	  HAL_Delay(5000);
 //	  OLED_Clear();
 //	  rfid_write_channel_data(0x02, &write_data);
+	  memset(&read_data,0,sizeof(read_data));
 	  rfid_read_channel_data(0x02, &read_data);
 	  OLED_ShowHexArray((uint8_t*)&read_data , 8, 1);
 	  OLED_ShowHexArray((uint8_t*)&read_data + 8, 8, 2);
@@ -155,6 +156,8 @@ int main(void)
 	  OLED_ShowHexArray((uint8_t*)&read_data + 40, 8, 2);
 	  HAL_Delay(5000);
 	  OLED_Clear();
+
+
 //
 //	   memset(&read_data,0,sizeof(read_data));
 //	   rfid_read_channel_data(2, &);
