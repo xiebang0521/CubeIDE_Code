@@ -1,0 +1,13 @@
+../Core/Src/rfid.c:45:9:Get_Bcc_Value	24	static
+../Core/Src/rfid.c:61:6:Insert_Data	32	static
+../Core/Src/rfid.c:75:6:insert_section_key	16	static
+../Core/Src/rfid.c:80:6:USART_SendArray	16	static
+../Core/Src/rfid.c:85:6:USART_ReceiveArray	32	static
+../Core/Src/rfid.c:96:6:USART_ReceiveData	16	static
+../Core/Src/rfid.c:114:9:RFID_Rc523_Config	16	static
+../Core/Src/rfid.c:161:9:RFID_Rc523_Wirte_Data	16	static
+../Core/Src/rfid.c:178:9:RFID_Rc523_Read_Data	32	static
+../Core/Src/rfid.c:215:6:RFID_Rc523_Write_Block	16	static
+../Core/Src/rfid.c:243:6:RFID_Rc523_Read_Block	32	static
+../Core/Src/rfid.c:276:6:rfid_write_channel_data	32	static
+../Core/Src/rfid.c:284:6:rfid_read_channel_data	32	static
