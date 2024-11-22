@@ -20,7 +20,11 @@ enum rfid_rwcommand_frames
 
 uint8_t wirte_state = 1;
 uint8_t IsReadDataFlag = 0;// 1 读卡成功，0 读卡失败
+uint8_t count = sizeof(Material_Data) / 16;
 //{0x4D, 0x49, 0x4E, 0x47, 0x44, 0x41};//mingda
+
+uint8_t plaintext[16];
+uint8_t key[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
 uint8_t section_key[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};//mingda
 
 uint8_t Config_ModuleAddr[6] 	   = {0x06, 0x01, 0x48, 0x01, 0xb1, 0x03};
@@ -55,8 +59,7 @@ uint8_t Get_Bcc_Value(uint8_t* arr, uint8_t size) {
 }
 
 /**
- * 
- * @brief 向写数据的命令中插入要写的数据
+ * @brief 向写数据的命令中插入数据
  */
 void Insert_Data(uint8_t* USART_SendArray, uint8_t* Data)
 {
@@ -67,7 +70,7 @@ void Insert_Data(uint8_t* USART_SendArray, uint8_t* Data)
 }
 
 /**
- * 插入扇区密钥到指定命令写入数据中
+ * @brief 插入扇区密钥到指定命令写入数据中
  * @param command_write_data 指向命令写入数据缓冲区的指针，该缓冲区应有足够的空间容纳插入的分区密钥
  * @param section_key 指向分区密钥的指针，该密钥将被插入到命令写入数据中
  * @return null
@@ -88,7 +91,7 @@ void USART_ReceiveArray(uint8_t* array, uint8_t size)
 	uint8_t count = 0;
     while(count < size)
     {
-        HAL_UART_Receive(&huart1,array+count, 1, 100);
+        HAL_UART_Receive(&huart1 , array + count, 1, 100);
         count++;
     }
 }
@@ -218,17 +221,21 @@ void RFID_Rc523_Write_Block(uint8_t Channel, uint8_t  blockaddr, uint8_t* Data)
     Command_WriteData[BLOCK] = blockaddr;
     insert_section_key(Command_WriteData, section_key);
     Insert_Data(Command_WriteData, Data);
+    memset(WirteData_Respond, 0, sizeof(WirteData_Respond));
     USART_SendArray(Command_WriteData,31);
     USART_ReceiveArray(WirteData_Respond,8);
-    OLED_ShowHexArray(Command_WriteData, 8, 1);
-	OLED_ShowHexArray(Command_WriteData + 8, 8, 2);
-	OLED_ShowHexArray(Command_WriteData + 16, 8, 3);
-    OLED_ShowHexArray(Command_WriteData + 24, 8, 4);
-    HAL_Delay(3000);
-    OLED_Clear();
-    OLED_ShowHexArray(Data, 8, 1);
-	OLED_ShowHexArray(Data + 8, 8, 2);
-	HAL_Delay(1000);
+
+//    OLED_ShowHexArray(Command_WriteData, 8, 1);
+//	OLED_ShowHexArray(Command_WriteData + 8, 8, 2);
+//	OLED_ShowHexArray(Command_WriteData + 16, 8, 3);
+//    OLED_ShowHexArray(Command_WriteData + 24, 8, 4);
+//    HAL_Delay(3000);
+//    OLED_Clear();
+
+//    OLED_ShowHexArray(Data, 8, 1);
+//	OLED_ShowHexArray(Data + 8, 8, 2);
+//	HAL_Delay(30000);
+
 	OLED_ShowHexArray(WirteData_Respond, 8, 4);
 	HAL_Delay(10000);
 	OLED_Clear();
@@ -275,27 +282,46 @@ void RFID_Rc523_Read_Block(uint8_t Channel, uint8_t blockaddr, uint8_t* Data)
 
 void rfid_write_channel_data(uint8_t channel, Material_Data* data)
 {
-    for (uint8_t i = 1; i <= 3 ; i++)
-    {
-        RFID_Rc523_Write_Block(channel, 1 + 4 * (i-1), (uint8_t*)data + ((i - 1) * 16));
-    }
+
+	for(uint8_t i = 1; i <= count; i++)
+	{
+	  memcpy(plaintext, (((uint8_t*)data) + ((i-1) * 16)), 16);
+	  cipher(plaintext, key);
+	  RFID_Rc523_Write_Block(channel, 1 + 4 * (i-1), plaintext);
+	}
+//    for (uint8_t i = 1; i <= 3 ; i++)
+//    {
+//        RFID_Rc523_Write_Block(channel, 1 + 4 * (i-1), (uint8_t*)data + ((i - 1) * 16));
+//    }
 }
 
 void rfid_read_channel_data(uint8_t channel, Material_Data* data)
 {
-    for (uint8_t i = 1; i <= 3; i++)
-    {
-    	OLED_ShowNum(4, 1, i, 1);
-        RFID_Rc523_Read_Block(channel, 1 + 4 * (i - 1), (uint8_t*)data + ((i - 1) * 16));
-	    OLED_ShowHexArray((uint8_t*)data, 8, 1);
-	    OLED_ShowHexArray((uint8_t*)data + 8, 8, 2);
-	    OLED_ShowHexArray((uint8_t*)data + 16, 8, 3);
-	    OLED_ShowHexArray((uint8_t*)data + 24, 8, 4);
+//    for (uint8_t i = 1; i <= 3; i++)
+//    {
+//    	OLED_ShowNum(4, 1, i, 1);
+//        RFID_Rc523_Read_Block(channel, 1 + 4 * (i - 1), (uint8_t*)data + ((i - 1) * 16));
+//	    OLED_ShowHexArray((uint8_t*)data, 8, 1);
+//	    OLED_ShowHexArray((uint8_t*)data + 8, 8, 2);
+//	    OLED_ShowHexArray((uint8_t*)data + 16, 8, 3);
+//	    OLED_ShowHexArray((uint8_t*)data + 24, 8, 4);
+//	    HAL_Delay(5000);
+//	    OLED_Clear();
+//	    OLED_ShowHexArray((uint8_t*)data + 32, 8, 1);
+//	    OLED_ShowHexArray((uint8_t*)data + 40, 8, 2);
+//	    HAL_Delay(5000);
+//	    OLED_Clear();
+//    }
+
+	for(uint8_t i = 1; i <= count; i++)
+	{
+		RFID_Rc523_Read_Block(channel, 1 + 4 * (i - 1),plaintext);
+	    OLED_ShowHexArray(plaintext, 8, 1);
+	    OLED_ShowHexArray(plaintext + 8, 8, 2);
+
 	    HAL_Delay(5000);
 	    OLED_Clear();
-	    OLED_ShowHexArray((uint8_t*)data + 32, 8, 1);
-	    OLED_ShowHexArray((uint8_t*)data + 40, 8, 2);
-	    HAL_Delay(5000);
-	    OLED_Clear();
-    }
+		invcipher(plaintext, key);
+		memcpy((uint8_t*)data + ((i - 1) * 16), plaintext, 16);
+	}
 }

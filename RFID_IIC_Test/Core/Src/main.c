@@ -27,6 +27,7 @@
 #include "rfid.h"
 #include "oled.h"
 #include "time.h"
+#include "aes.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -72,7 +73,7 @@ int main(void)
 	// 修改密码
   Material_Data write_data;
   Material_Data read_data;
-
+  memset(&write_data, 0, sizeof(write_data));
   memcpy(write_data.material_type, "PLA",sizeof("PLA"));
   write_data.rgb[0] = 0xff;
   write_data.rgb[1] = 0xff;
@@ -90,10 +91,12 @@ int main(void)
   write_data.material_diameter = 1.75;
   write_data.material_density = 1.23;
 /*
- * 50 4c 41 00 fb 22 00 08 d0 ff ff ff a9 ca 35 67
+ * 50 4c 41 00 00 00 00 00 00 ff ff ff a9 ca 35 67
+ * 5e a1 79 25 f7 e6 b7 93 f0 94 05 d2 ae 53 18 41// aes
  * 4d 44 30 30 30 30 31 00 28 00 64 00 96 00 90 01 (1)
+ * 96 de fd 2a 09 c1 38 92 ab c0 5a c3 89 25 d2 ea// aes
  * d0 07 96 00 dc 05 01 00 00 00 e0 3f a4 70 9d 3f	(3)
- *
+ * 50 7a 6a 5d 0a d5 13 6d 5e 72 43 a4 5b 06 6a c0
  * */
 
   /* USER CODE END 1 */
@@ -144,6 +147,8 @@ int main(void)
 //	  HAL_Delay(5000);
 //	  OLED_Clear();
 //	  rfid_write_channel_data(0x02, &write_data);
+
+
 	  memset(&read_data,0,sizeof(read_data));
 	  rfid_read_channel_data(0x02, &read_data);
 	  OLED_ShowHexArray((uint8_t*)&read_data , 8, 1);
@@ -157,25 +162,6 @@ int main(void)
 	  HAL_Delay(5000);
 	  OLED_Clear();
 
-
-//
-//	   memset(&read_data,0,sizeof(read_data));
-//	   rfid_read_channel_data(2, &);
-//	   HAL_Delay(5000);
-	  // OLED_Clear();
-	  // for(int i = 0; i < 16; i++)
-	  // {
-		//   Write_Data[i]++;
-	  // }
-
-	  // RFID_Rc523_Write_Block(0x03,0x03,Write_Data);
-	  // HAL_Delay(5000);
-	  // OLED_Clear();
-
-	  // memset(Read_Data,0,16);
-	  // RFID_Rc523_Read_Block(0x03,0x03,Read_Data);
-	  // HAL_Delay(5000);
-	  // OLED_Clear();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

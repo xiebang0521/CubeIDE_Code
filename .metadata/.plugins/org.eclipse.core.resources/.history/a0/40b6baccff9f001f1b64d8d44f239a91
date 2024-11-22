@@ -1,8 +1,0 @@
-#ifndef __RFID_H__
-#define __RFID_H__
-#include <main.h>
-#include "usart.h"
-uint8_t RFID_Rc523_Config(void);
-#endif
-
-

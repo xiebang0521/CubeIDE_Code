@@ -1,4 +1,4 @@
-14:26:11 **** Incremental Build of configuration Debug for project main_board ****
+19:28:34 **** Incremental Build of configuration Debug for project main_board ****
 make -j16 all 
 arm-none-eabi-gcc "../Core/Src/OLED.c" -mcpu=cortex-m0 -std=gnu11 -g -DDEBUG -DUSE_HAL_DRIVER -DSTM32F072xB -c -I../Core/Inc -I../Drivers/STM32F0xx_HAL_Driver/Inc -I../Drivers/STM32F0xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32F0xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/OLED.d" -MT"Core/Src/OLED.o" --specs=nano.specs -mfloat-abi=soft -mthumb -o "Core/Src/OLED.o"
 arm-none-eabi-gcc "../Core/Src/main.c" -mcpu=cortex-m0 -std=gnu11 -g -DDEBUG -DUSE_HAL_DRIVER -DSTM32F072xB -c -I../Core/Inc -I../Drivers/STM32F0xx_HAL_Driver/Inc -I../Drivers/STM32F0xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32F0xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/main.d" -MT"Core/Src/main.o" --specs=nano.specs -mfloat-abi=soft -mthumb -o "Core/Src/main.o"
@@ -485,12 +485,12 @@ In file included from ../Core/Src/OLED.c:3:
     4 | #include "gpio.h"
       |          ^~~~~~~~
 compilation terminated.
+make: *** [Core/Src/subdir.mk:55: Core/Src/OLED.o] Error 1
+make: *** Waiting for unfinished jobs....
 In file included from ../Core/Src/main.c:25:
 ../Core/Inc/oled.h:6:32: error: conflicting types for 'uint32_t'; have 'unsigned int'
     6 | typedef unsigned           int uint32_t;
       |                                ^~~~~~~~
-make: *** [Core/Src/subdir.mk:55: Core/Src/OLED.o] Error 1
-make: *** Waiting for unfinished jobs....
 In file included from D:\ST\STM32CubeIDE_1.16.1\STM32CubeIDE\plugins\com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.12.3.rel1.win32_1.0.200.202406191623\tools\bin/../lib/gcc/arm-none-eabi/12.3.1/../../../../arm-none-eabi/include/stdint.h:14,
                  from D:\ST\STM32CubeIDE_1.16.1\STM32CubeIDE\plugins\com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.12.3.rel1.win32_1.0.200.202406191623\tools\bin/../lib/gcc/arm-none-eabi/12.3.1/include/stdint.h:9,
                  from ../Drivers/CMSIS/Include/core_cm0.h:34,
@@ -523,5 +523,5 @@ D:\ST\STM32CubeIDE_1.16.1\STM32CubeIDE\plugins\com.st.stm32cube.ide.mcu.external
 make: *** [Core/Src/subdir.mk:55: Core/Src/main.o] Error 1
 "make -j16 all" terminated with exit code 2. Build might be incomplete.
 
-14:26:12 Build Failed. 6 errors, 3 warnings. (took 581ms)
+19:28:34 Build Failed. 6 errors, 3 warnings. (took 416ms)
 
