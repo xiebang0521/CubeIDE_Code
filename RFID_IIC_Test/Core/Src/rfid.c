@@ -1,5 +1,5 @@
 #include <rfid.h>
-
+#include "oled.h"
 enum rfid_rwcommand_frames
 {
     COMMAND_LENGTH = 0,
@@ -82,7 +82,7 @@ void insert_section_key(uint8_t* command_write_data, uint8_t* section_key)
 
 void USART_SendArray(uint8_t* array,uint8_t size)
 {
-	HAL_UART_Transmit(&huart1, array, size, 100);
+	HAL_UART_Transmit(&huart1, array, size, 500);
 }
 
 void USART_ReceiveArray(uint8_t* array, uint8_t size)
@@ -91,7 +91,8 @@ void USART_ReceiveArray(uint8_t* array, uint8_t size)
 	uint8_t count = 0;
     while(count < size)
     {
-        HAL_UART_Receive(&huart1 , array + count, 1, 100);
+        HAL_UART_Receive(&huart1 , array + count, 1, 500);
+//        HAL_UART_Receive(&huart1 , array, size, 1000);
         count++;
     }
 }
@@ -237,7 +238,7 @@ void RFID_Rc523_Write_Block(uint8_t Channel, uint8_t  blockaddr, uint8_t* Data)
 //	HAL_Delay(30000);
 
 	OLED_ShowHexArray(WirteData_Respond, 8, 4);
-	HAL_Delay(10000);
+	HAL_Delay(3000);
 	OLED_Clear();
 }
 
@@ -286,8 +287,20 @@ void rfid_write_channel_data(uint8_t channel, Material_Data* data)
 	for(uint8_t i = 1; i <= count; i++)
 	{
 	  memcpy(plaintext, (((uint8_t*)data) + ((i-1) * 16)), 16);
+	OLED_ShowHexArray(plaintext, 8, 1);
+	OLED_ShowHexArray(plaintext + 8, 8, 2);
+	HAL_Delay(30000);
+	OLED_Clear();
 	  cipher(plaintext, key);
-	  RFID_Rc523_Write_Block(channel, 1 + 4 * (i-1), plaintext);
+	  if(i % 2 == 1)
+	  {
+		  RFID_Rc523_Write_Block(channel, 1 + 4 * ((i-1)/2), plaintext);// 1 5 9
+	  }
+	  else
+	  {
+		  RFID_Rc523_Write_Block(channel, 2 + 4 * ((i-1)/2), plaintext);// 2 6 10
+	  }
+
 	}
 //    for (uint8_t i = 1; i <= 3 ; i++)
 //    {
@@ -315,7 +328,14 @@ void rfid_read_channel_data(uint8_t channel, Material_Data* data)
 
 	for(uint8_t i = 1; i <= count; i++)
 	{
-		RFID_Rc523_Read_Block(channel, 1 + 4 * (i - 1),plaintext);
+		if(i % 2 == 1)
+		{
+			RFID_Rc523_Read_Block(channel, 1 + 4 * ((i - 1) / 2),plaintext); // 1 1 3 5 5 9
+		}
+		else
+		{
+			RFID_Rc523_Read_Block(channel, 2 + 4 * ((i - 1) / 2),plaintext); // 2 2 4 6 6 10
+		}
 	    OLED_ShowHexArray(plaintext, 8, 1);
 	    OLED_ShowHexArray(plaintext + 8, 8, 2);
 

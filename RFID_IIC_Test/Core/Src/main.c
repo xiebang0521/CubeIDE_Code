@@ -71,25 +71,37 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 	// 修改密码
+//  write_data.hot_bed_temp_H = 100;
+//  write_data.hot_bed_temp_L = 40;
+//  write_data.exthead_temp_L = 150;
+//  write_data.exthead_temp_H = 400;
   Material_Data write_data;
   Material_Data read_data;
   memset(&write_data, 0, sizeof(write_data));
   memcpy(write_data.material_type, "PLA",sizeof("PLA"));
+  memcpy(write_data.batch_number, "MD202411120001", sizeof("MD202411120001"));
+  write_data.cavity_temp = 35;
   write_data.rgb[0] = 0xff;
   write_data.rgb[1] = 0xff;
   write_data.rgb[2] = 0xff;
   write_data.produced_date =1731578537;
-  memcpy(write_data.batch_number, "MD00001",sizeof("MD00001"));
-  write_data.hot_bed_temp_H = 100;
-  write_data.hot_bed_temp_L = 40;
-  write_data.exthead_temp_L = 150;
-  write_data.exthead_temp_H = 400;
+  write_data.material_diameter = 1.75;
+  write_data.material_density = 1.23;
   write_data.init_weight = 2000;
   write_data.empty_tray_weight = 150;
   write_data.residual_weight = 1500;
-  write_data.supplier = 0x01;
-  write_data.material_diameter = 1.75;
-  write_data.material_density = 1.23;
+  memcpy(write_data.supplier, "MD9999",sizeof("MD9999"));
+  memcpy(write_data.machines[0].machine_type, "MD1000D",sizeof("MD1000D"));
+  write_data.machines[0].fan_speed = 100;
+  write_data.machines[0].flow_ratio = 25.5;
+  write_data.machines[0].nozzle_temp = 220;
+  write_data.machines[0].nozzle_temp_l = 150;
+  write_data.machines[0].nozzle_temp_h = 400;
+  write_data.machines[0].hot_bed_temp = 50;
+  write_data.machines[0].hot_bed_temp_l = 40;
+  write_data.machines[0].hot_bed_temp_h = 100;
+  write_data.machines[0].advance_pressure = 0.1;
+
 /*
  * 50 4c 41 00 00 00 00 00 00 ff ff ff a9 ca 35 67
  * 5e a1 79 25 f7 e6 b7 93 f0 94 05 d2 ae 53 18 41// aes
@@ -146,7 +158,7 @@ int main(void)
 //	  OLED_ShowHexArray((uint8_t*)&write_data + 40, 8, 2);
 //	  HAL_Delay(5000);
 //	  OLED_Clear();
-//	  rfid_write_channel_data(0x02, &write_data);
+	  //rfid_write_channel_data(0x02, &write_data);
 
 
 	  memset(&read_data,0,sizeof(read_data));
@@ -159,6 +171,14 @@ int main(void)
 	  OLED_Clear();
 	  OLED_ShowHexArray((uint8_t*)&read_data + 32, 8, 1);
 	  OLED_ShowHexArray((uint8_t*)&read_data + 40, 8, 2);
+	  OLED_ShowHexArray((uint8_t*)&read_data + 48, 8, 3);
+	  OLED_ShowHexArray((uint8_t*)&read_data + 56, 8, 4);
+	  HAL_Delay(5000);
+	  OLED_Clear();
+	  OLED_ShowHexArray((uint8_t*)&read_data + 64, 8, 1);
+	  OLED_ShowHexArray((uint8_t*)&read_data + 72, 8, 2);
+	  OLED_ShowHexArray((uint8_t*)&read_data + 80, 8, 3);
+	  OLED_ShowHexArray((uint8_t*)&read_data + 88, 8, 4);
 	  HAL_Delay(5000);
 	  OLED_Clear();
 
