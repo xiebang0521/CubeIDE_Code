@@ -20,6 +20,8 @@ enum rfid_rwcommand_frames
 
 uint8_t wirte_state = 1;
 uint8_t IsReadDataFlag = 0;// 1 读卡成功，0 读卡失败
+uint8_t read_status = 0; // 读IC卡的内存一次 ，返回为 0 读取成功， 返回为 1 读取失败。
+
 uint8_t count = sizeof(Material_Data) / 16;
 //{0x4D, 0x49, 0x4E, 0x47, 0x44, 0x41};//mingda
 
@@ -92,7 +94,6 @@ void USART_ReceiveArray(uint8_t* array, uint8_t size)
     while(count < size)
     {
         HAL_UART_Receive(&huart1 , array + count, 1, 500);
-//        HAL_UART_Receive(&huart1 , array, size, 1000);
         count++;
     }
 }
@@ -226,14 +227,14 @@ void RFID_Rc523_Write_Block(uint8_t Channel, uint8_t  blockaddr, uint8_t* Data)
     USART_SendArray(Command_WriteData,31);
     USART_ReceiveArray(WirteData_Respond,8);
 
-//    OLED_ShowHexArray(Command_WriteData, 8, 1);
+//  OLED_ShowHexArray(Command_WriteData, 8, 1);
 //	OLED_ShowHexArray(Command_WriteData + 8, 8, 2);
 //	OLED_ShowHexArray(Command_WriteData + 16, 8, 3);
-//    OLED_ShowHexArray(Command_WriteData + 24, 8, 4);
-//    HAL_Delay(3000);
-//    OLED_Clear();
+//  OLED_ShowHexArray(Command_WriteData + 24, 8, 4);
+//  HAL_Delay(3000);
+//  OLED_Clear();
 
-//    OLED_ShowHexArray(Data, 8, 1);
+//  OLED_ShowHexArray(Data, 8, 1);
 //	OLED_ShowHexArray(Data + 8, 8, 2);
 //	HAL_Delay(30000);
 
@@ -260,9 +261,6 @@ void RFID_Rc523_Read_Block(uint8_t Channel, uint8_t blockaddr, uint8_t* Data)
     USART_SendArray(Command_ReadData,15);
     USART_ReceiveData();
 
-
-
-
     if (IsReadDataFlag)
     {
 		memcpy(Data,ReadData_HaveICRespond + 11, 16);
@@ -270,13 +268,15 @@ void RFID_Rc523_Read_Block(uint8_t Channel, uint8_t blockaddr, uint8_t* Data)
 //	    OLED_ShowHexArray(Data + 8, 8, 2);
 //	    HAL_Delay(5000);
 //	    OLED_Clear();
-		IsReadDataFlag = 0;
+//		IsReadDataFlag = 0;
     }
     else
     {
+    	read_status = 1;
 	    OLED_ShowHexArray(ReadData_NOICRespond, 8, 1);
 	    HAL_Delay(5000);
 	    OLED_Clear();
+
     }
 
 }
@@ -328,6 +328,7 @@ void rfid_read_channel_data(uint8_t channel, Material_Data* data)
 
 	for(uint8_t i = 1; i <= count; i++)
 	{
+		memset(plaintext,0, sizeof(plaintext));
 		if(i % 2 == 1)
 		{
 			RFID_Rc523_Read_Block(channel, 1 + 4 * ((i - 1) / 2),plaintext); // 1 1 3 5 5 9
@@ -341,7 +342,21 @@ void rfid_read_channel_data(uint8_t channel, Material_Data* data)
 
 	    HAL_Delay(5000);
 	    OLED_Clear();
-		invcipher(plaintext, key);
-		memcpy((uint8_t*)data + ((i - 1) * 16), plaintext, 16);
+
+		if(IsReadDataFlag)
+		{
+			invcipher(plaintext, key);
+			memcpy((uint8_t*)data + ((i - 1) * 16), plaintext, 16);
+			IsReadDataFlag = 0;
+		}
+
 	}
+
+	if(read_status)
+	{
+		memset((uint8_t*)data, 0, sizeof(Material_Data));
+		read_status = 0;
+	}
+
+
 }
