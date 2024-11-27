@@ -1,0 +1,5 @@
+../Core/Src/can.c:24:6:CAN_Filter_Config	48	static
+../Core/Src/can.c:47:6:Can_SetTxMsg	16	static
+../Core/Src/can.c:59:6:MX_CAN_Init	8	static
+../Core/Src/can.c:96:6:HAL_CAN_MspInit	56	static
+../Core/Src/can.c:129:6:HAL_CAN_MspDeInit	16	static
